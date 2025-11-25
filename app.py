@@ -37,7 +37,7 @@ current_conversations = {}  # Keyed by CallSid
 def get_ai_response(messages):
     """Get response from xAI Grok."""
     payload = {
-        "model": "grok-beta",
+        "model": "grok-3",
         "messages": messages,
         "temperature": 0.7,
         "max_tokens": 200  # Shorter for voice

@@ -1,0 +1,4 @@
+requests==2.32.3
+twilio==9.3.0
+flask==3.0.3
+ngrok==1.1.0

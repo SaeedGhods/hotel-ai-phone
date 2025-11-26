@@ -6,6 +6,7 @@ import os
 import json
 import re
 from typing import Dict
+from datetime import datetime
 
 app = Flask(__name__)
 
@@ -114,7 +115,7 @@ def get_state(call_sid):
     """Get or create state for call."""
     all_state = load_state()
     if call_sid not in all_state:
-        all_state[call_sid] = {'messages': [], 'lang': 1, 'room_number': None, 'caller_name': 'guest'}
+        all_state[call_sid] = {'messages': [], 'lang': 1, 'room_number': None, 'caller_name': 'guest', 'timestamp': datetime.now().isoformat()}
     return all_state[call_sid]
 
 def save_state_update(call_sid, state):
@@ -165,6 +166,7 @@ def get_ai_response(messages, room_number=None, service_name=None):
 
 def get_caller_name(from_number):
     """Get caller name from phone number."""
+    # Normalize (strip +1 if present)
     normalized = from_number.replace('+1', '')
     return KNOWN_CALLERS.get(from_number, "guest")
 
@@ -176,7 +178,7 @@ def get_room_data(room_number):
 def internal_error(error):
     """Handle internal errors gracefully."""
     resp = VoiceResponse()
-    resp.say("Sorry, something went wrong. Please call back or press any key to end.", voice='polly.Amy-Neural')
+    resp.say("Sorry, something went wrong. Please call back or press any key to end.", voice='polly.Amy-Neural', language='en-US')
     resp.hangup()
     return Response(str(resp), mimetype='text/xml')
 
@@ -186,7 +188,7 @@ def home():
     html = f"""
     <html><body>
     <h1>Hotel AI Phone System</h1>
-    <p>Version 0.2.3 - Ready for Twilio calls!</p>
+    <p>Version 0.2.4 - Ready for Twilio calls!</p>
     <p>Call (949) 669-3870 to test: Say language > Room > Service (e.g., "room service hamburger").</p>
     <p>Dashboard: <a href="/dashboard">View call logs</a></p>
     <p>Webhook: POST to /voice for inbound calls.</p>
@@ -197,14 +199,14 @@ def home():
 @app.route('/test', methods=['GET'])
 def test():
     """Test endpoint for manual verification."""
-    return "Hotel AI webhook ready for Twilio calls. Version 0.2.3."
+    return "Hotel AI webhook ready for Twilio calls. Version 0.2.4."
 
 @app.route('/dashboard', methods=['GET'])
 def dashboard():
     """Simple dashboard to view recent call logs."""
     logs = load_call_logs()
     html = f"""
-    <html><body><h1>Hotel AI Call Dashboard (v0.2.3)</h1>
+    <html><body><h1>Hotel AI Call Dashboard (v0.2.4)</h1>
     <p>Recent Calls:</p>
     <ul>
     """
@@ -225,7 +227,7 @@ def voice():
     
     resp = VoiceResponse()
     lang_config = LANGUAGES[1]  # Default English
-    welcome_text = f"Hello {caller_name}, you are using version 0.2.3 of the hotel A-I system. I speak most major languages. Welcome. How can I help you today? You can ask for room service, front desk, concierge, housekeeping, or maintenance."
+    welcome_text = f"Hello {caller_name}, you are using version 0.2.4 of the hotel A-I system. I speak most major languages. Welcome. How can I help you today? You can ask for room service, front desk, concierge, housekeeping, or maintenance."
     resp.say(welcome_text, voice=lang_config['voice'], language=lang_config['lang'])
     
     # Ask for room number if not known
@@ -293,32 +295,30 @@ def service_selected():
     call_sid = request.values.get('CallSid', 'default')
     digit = request.values.get('Digits', None)
     speech_result = request.values.get('SpeechResult', '').lower().strip()
-    
-    conv = get_state(call_sid)
-    lang_config = LANGUAGES[conv['lang']]
+    lang_config = LANGUAGES[current_conversations.get(call_sid, {}).get('lang', 1)]
     
     print(f"Service Selection Debug: Digit={digit}, Speech={speech_result}, Lang={lang_config['lang']}")  # Debug: Log input
     
     # Auto-detect language from speech_result
     if speech_result:
         detected_lang = detect_language(speech_result)
-        if detected_lang != conv['lang']:
-            conv['lang'] = detected_lang
+        if detected_lang != current_conversations.get(call_sid, {}).get('lang', 1):
+            current_conversations[call_sid]['lang'] = detected_lang
             lang_config = LANGUAGES[detected_lang]
             print(f"Detected and switched to lang {detected_lang}")
     
     # Try speech first, then DTMF - expanded keywords for natural phrases
     service_num = None
     if speech_result:
-        if any(word in speech_result for word in ['one', 'room', 'service', 'food', 'order', 'meal']):
+        if any(word in speech_result for word in ['one', 'room', 'service', 'food', 'order', 'meal', 'dinner', 'breakfast', 'lunch', 'snack', 'beverage']):
             service_num = 1
-        elif any(word in speech_result for word in ['two', 'front', 'desk', 'check', 'bill', 'inquiry']):
+        elif any(word in speech_result for word in ['two', 'front', 'desk', 'check', 'in', 'out', 'bill', 'billing', 'payment', 'inquiry', 'reservation', 'key', 'room key', 'complaint']):
             service_num = 2
-        elif any(word in speech_result for word in ['three', 'concierge', 'recommend', 'restaurant']):
+        elif any(word in speech_result for word in ['three', 'concierge', 'recommend', 'restaurant', 'attraction', 'tour', 'transport', 'taxi', 'book', 'reserve', 'dinner reservation', 'show']):
             service_num = 3
-        elif any(word in speech_result for word in ['four', 'house', 'housekeeping', 'clean', 'towel']):
+        elif any(word in speech_result for word in ['four', 'house', 'housekeeping', 'clean', 'towel', 'linen', 'amenity', 'bed', 'room clean', 'extra pillow', 'soap']):
             service_num = 4
-        elif any(word in speech_result for word in ['five', 'maintenance', 'fix', 'ac', 'plumbing']):
+        elif any(word in speech_result for word in ['five', 'maintenance', 'fix', 'ac', 'plumbing', 'repair', 'broken']):
             service_num = 5
     elif digit:
         try:
@@ -328,6 +328,7 @@ def service_selected():
     
     if service_num and service_num in SERVICES:
         service_name, desc = SERVICES[service_num]
+        conv = current_conversations.get(call_sid, {})
         conv['service'] = service_name
         conv['system_prompt'] = f"You are a helpful {service_name} assistant in a hotel. {desc}"
         conv['messages'] = [{"role": "system", "content": conv['system_prompt']}]
@@ -340,7 +341,6 @@ def service_selected():
         # Gather speech for conversation
         gather = Gather(input='speech', speech_timeout='auto', action='/handle_speech', method='POST', speech_model='default', finish_on_key='#')
         resp.append(gather)
-        save_state_update(call_sid, conv)
         return Response(str(resp), mimetype='text/xml')
     
     # Invalid, repeat with clearer prompt
@@ -355,12 +355,11 @@ def service_selected():
 def handle_speech():
     call_sid = request.values.get('CallSid', 'default')
     speech_result = request.values.get('SpeechResult', '').strip()
-    
-    conv = get_state(call_sid)
-    lang_config = LANGUAGES[conv['lang']]
+    lang_config = LANGUAGES[current_conversations.get(call_sid, {}).get('lang', 1)]
     
     print(f"Speech Input: {speech_result}")  # Debug: Log transcribed speech
     
+    conv = current_conversations.get(call_sid, {})
     if speech_result and conv:
         messages = conv['messages']
         messages.append({"role": "user", "content": speech_result})
@@ -376,12 +375,6 @@ def handle_speech():
             if call_sid in all_state:
                 del all_state[call_sid]
             save_state(all_state)
-            save_call_log({
-                'call_sid': call_sid,
-                'service': conv.get('service', 'unknown'),
-                'speech': speech_result,
-                'ai_reply': 'escalated to human'
-            })
             return Response(str(resp), mimetype='text/xml')
         
         ai_reply = get_ai_response(messages, conv.get('room_number'), conv.get('service'))
@@ -399,12 +392,6 @@ def handle_speech():
             gather = Gather(input='speech', speech_timeout='auto', action='/handle_speech', method='POST', speech_model='default', finish_on_key='#')
             resp.append(gather)
         save_state_update(call_sid, conv)
-        save_call_log({
-            'call_sid': call_sid,
-            'service': conv.get('service', 'unknown'),
-            'speech': speech_result,
-            'ai_reply': ai_reply
-        })
         return Response(str(resp), mimetype='text/xml')
     
     # No speech or end
@@ -416,12 +403,6 @@ def handle_speech():
     if call_sid in all_state:
         del all_state[call_sid]
     save_state(all_state)
-    save_call_log({
-        'call_sid': call_sid,
-        'service': conv.get('service', 'unknown'),
-        'speech': 'end call',
-        'ai_reply': 'goodbye'
-    })
     return Response(str(resp), mimetype='text/xml')
 
 @app.route('/hangup', methods=['POST'])
@@ -433,6 +414,6 @@ def hangup():
     return Response(str(resp), mimetype='text/xml')
 
 if __name__ == '__main__':
-    port = int(os.getenv('PORT', 5000))
-    host = os.getenv('HOST', '0.0.0.0')
+    port = int(os.environ.get('PORT', 5000))
+    host = os.environ.get('HOST', '0.0.0.0')
     app.run(host=host, port=port, debug=True)

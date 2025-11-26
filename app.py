@@ -65,7 +65,7 @@ LANGUAGES = {
 # Language detection keywords (simple, based on common words)
 LANGUAGE_KEYWORDS = {
     2: ['hola', 'por favor', 'gracias', 'español', 'es'],
-    3: ['bonjour', 's'il vous plaît', 'français', 'fr'],
+    3: ['bonjour', 's\'il vous plaît', 'français', 'fr'],
     4: ['hallo', 'bitte', 'deutsch', 'de'],
     5: ['ciao', 'per favore', 'italiano', 'it'],
     6: ['konnichiwa', 'arigatou', '日本語', 'ja']
@@ -147,20 +147,20 @@ def get_ai_response(messages, room_number=None, service_name=None):
         "max_tokens": 200  # Shorter for voice
     }
     try:
-        logger.info(f"xAI Payload: {payload}")
+        print(f"xAI Payload: {payload}")  # Debug: Log payload
         response = requests.post(XAI_API_URL, headers=XAI_HEADERS, json=payload, timeout=10)
-        logger.info(f"xAI Response Status: {response.status_code}")
-        logger.info(f"xAI Response Text: {response.text}")
+        print(f"xAI Response Status: {response.status_code}")  # Debug: Log status
+        print(f"xAI Response Text: {response.text}")  # Debug: Log full response
         response.raise_for_status()
         data = response.json()
         return data["choices"][0]["message"]["content"]
     except requests.exceptions.RequestException as e:
-        logger.error(f"xAI Request Error: {e}")
+        print(f"xAI Request Error: {e}")  # Debug: Log request error
         # Predefined fallback based on service
         fallback = "I'm having trouble connecting to my knowledge base right now. I'll note your request and follow up soon."
         return fallback
     except Exception as e:
-        logger.error(f"xAI Unexpected Error: {e}")
+        print(f"xAI Unexpected Error: {e}")  # Debug: Log unexpected error
         return "I'm having trouble connecting to my knowledge base right now. I'll note your request and follow up soon."
 
 def get_caller_name(from_number):
@@ -180,17 +180,31 @@ def internal_error(error):
     resp.hangup()
     return Response(str(resp), mimetype='text/xml')
 
+@app.route('/', methods=['GET'])
+def home():
+    """Landing page with version info."""
+    html = f"""
+    <html><body>
+    <h1>Hotel AI Phone System</h1>
+    <p>Version 0.2.3 - Ready for Twilio calls!</p>
+    <p>Call (949) 669-3870 to test: Say language > Room > Service (e.g., "room service hamburger").</p>
+    <p>Dashboard: <a href="/dashboard">View call logs</a></p>
+    <p>Webhook: POST to /voice for inbound calls.</p>
+    </body></html>
+    """
+    return html
+
 @app.route('/test', methods=['GET'])
 def test():
     """Test endpoint for manual verification."""
-    return "Hotel AI webhook ready for Twilio calls. Version 0.2.2."
+    return "Hotel AI webhook ready for Twilio calls. Version 0.2.3."
 
 @app.route('/dashboard', methods=['GET'])
 def dashboard():
     """Simple dashboard to view recent call logs."""
     logs = load_call_logs()
-    html = """
-    <html><body><h1>Hotel AI Call Dashboard (v0.2.2)</h1>
+    html = f"""
+    <html><body><h1>Hotel AI Call Dashboard (v0.2.3)</h1>
     <p>Recent Calls:</p>
     <ul>
     """
@@ -208,11 +222,10 @@ def voice():
     # Load state
     conv = get_state(call_sid)
     conv['caller_name'] = caller_name
-    conv['lang'] = 1  # Default English
     
     resp = VoiceResponse()
     lang_config = LANGUAGES[1]  # Default English
-    welcome_text = f"Hello {caller_name}, you are using version 0.2.2 of the hotel A-I system. I speak most major languages. Welcome. How can I help you today? You can ask for room service, front desk, concierge, housekeeping, or maintenance."
+    welcome_text = f"Hello {caller_name}, you are using version 0.2.3 of the hotel A-I system. I speak most major languages. Welcome. How can I help you today? You can ask for room service, front desk, concierge, housekeeping, or maintenance."
     resp.say(welcome_text, voice=lang_config['voice'], language=lang_config['lang'])
     
     # Ask for room number if not known
@@ -282,15 +295,14 @@ def service_selected():
     speech_result = request.values.get('SpeechResult', '').lower().strip()
     
     conv = get_state(call_sid)
-    lang_id = conv.get('lang', 1)
-    lang_config = LANGUAGES[lang_id]
+    lang_config = LANGUAGES[conv['lang']]
     
     print(f"Service Selection Debug: Digit={digit}, Speech={speech_result}, Lang={lang_config['lang']}")  # Debug: Log input
     
     # Auto-detect language from speech_result
     if speech_result:
         detected_lang = detect_language(speech_result)
-        if detected_lang != lang_id:
+        if detected_lang != conv['lang']:
             conv['lang'] = detected_lang
             lang_config = LANGUAGES[detected_lang]
             print(f"Detected and switched to lang {detected_lang}")
@@ -298,15 +310,15 @@ def service_selected():
     # Try speech first, then DTMF - expanded keywords for natural phrases
     service_num = None
     if speech_result:
-        if any(word in speech_result for word in ['one', 'room', 'service', 'food', 'order', 'meal', 'dinner', 'breakfast', 'lunch', 'snack', 'beverage']):
+        if any(word in speech_result for word in ['one', 'room', 'service', 'food', 'order', 'meal']):
             service_num = 1
-        elif any(word in speech_result for word in ['two', 'front', 'desk', 'check', 'in', 'out', 'bill', 'billing', 'payment', 'inquiry', 'reservation', 'key', 'room key', 'complaint']):
+        elif any(word in speech_result for word in ['two', 'front', 'desk', 'check', 'bill', 'inquiry']):
             service_num = 2
-        elif any(word in speech_result for word in ['three', 'concierge', 'recommend', 'restaurant', 'attraction', 'tour', 'transport', 'taxi', 'book', 'reserve', 'dinner reservation', 'show']):
+        elif any(word in speech_result for word in ['three', 'concierge', 'recommend', 'restaurant']):
             service_num = 3
-        elif any(word in speech_result for word in ['four', 'house', 'housekeeping', 'clean', 'towel', 'linen', 'amenity', 'bed', 'room clean', 'extra pillow', 'soap']):
+        elif any(word in speech_result for word in ['four', 'house', 'housekeeping', 'clean', 'towel']):
             service_num = 4
-        elif any(word in speech_result for word in ['five', 'maintenance', 'fix', 'ac', 'plumbing', 'repair', 'broken']):
+        elif any(word in speech_result for word in ['five', 'maintenance', 'fix', 'ac', 'plumbing']):
             service_num = 5
     elif digit:
         try:
@@ -345,16 +357,7 @@ def handle_speech():
     speech_result = request.values.get('SpeechResult', '').strip()
     
     conv = get_state(call_sid)
-    lang_id = conv.get('lang', 1)
-    lang_config = LANGUAGES[lang_id]
-    
-    # Auto-detect language from speech_result
-    if speech_result:
-        detected_lang = detect_language(speech_result)
-        if detected_lang != lang_id:
-            conv['lang'] = detected_lang
-            lang_config = LANGUAGES[detected_lang]
-            print(f"Detected and switched to lang {detected_lang}")
+    lang_config = LANGUAGES[conv['lang']]
     
     print(f"Speech Input: {speech_result}")  # Debug: Log transcribed speech
     
@@ -430,6 +433,6 @@ def hangup():
     return Response(str(resp), mimetype='text/xml')
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    host = os.environ.get('HOST', '0.0.0.0')
+    port = int(os.getenv('PORT', 5000))
+    host = os.getenv('HOST', '0.0.0.0')
     app.run(host=host, port=port, debug=True)

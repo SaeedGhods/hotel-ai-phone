@@ -63,6 +63,7 @@ def voice():
     current_conversations[call_sid] = {'messages': []}
     
     resp = VoiceResponse()
+    resp.say("You are using version 0.1.1 of the hotel AI system.", voice='alice')
     resp.say("Welcome to Hotel AI Services. Press 1 for Room Service, 2 for Front Desk, 3 for Concierge, or 4 for Housekeeping. Or say the number.", voice='alice')
     
     # Gather DTMF or speech for service selection
@@ -79,16 +80,18 @@ def service_selected():
     digit = request.values.get('Digits', None)
     speech_result = request.values.get('SpeechResult', '').lower().strip()
     
-    # Try speech first, then DTMF
+    print(f"Service Selection Debug: Digit={digit}, Speech={speech_result}")  # Debug: Log input
+    
+    # Try speech first, then DTMF - expanded keywords for better matching
     service_num = None
     if speech_result:
-        if 'one' in speech_result or 'room' in speech_result:
+        if any(word in speech_result for word in ['one', 'room', 'service', 'food', 'order']):
             service_num = 1
-        elif 'two' in speech_result or 'front' in speech_result:
+        elif any(word in speech_result for word in ['two', 'front', 'desk', 'check', 'bill', 'billing', 'inquiry']):
             service_num = 2
-        elif 'three' in speech_result or 'concierge' in speech_result:
+        elif any(word in speech_result for word in ['three', 'concierge', 'recommend', 'restaurant', 'attraction', 'reservation']):
             service_num = 3
-        elif 'four' in speech_result or 'house' in speech_result:
+        elif any(word in speech_result for word in ['four', 'house', 'housekeeping', 'clean', 'towel', 'linen', 'amenity']):
             service_num = 4
     elif digit:
         try:
@@ -103,6 +106,8 @@ def service_selected():
         conv['system_prompt'] = f"You are a helpful {service_name} assistant in a hotel. {desc}"
         conv['messages'] = [{"role": "system", "content": conv['system_prompt']}]
         
+        print(f"Connected to service {service_num}: {service_name}")  # Debug: Log success
+        
         resp = VoiceResponse()
         resp.say(f"Connected to {service_name}. How can I help you today? You can speak or press pound to end.", voice='alice')
         
@@ -112,9 +117,12 @@ def service_selected():
         
         return Response(str(resp), mimetype='text/xml')
     
-    # Invalid, redirect back
+    # Invalid, repeat with clearer prompt
     resp = VoiceResponse()
-    resp.say("Sorry, I didn't understand. Please press or say 1 for Room Service, 2 for Front Desk, 3 for Concierge, or 4 for Housekeeping.")
+    resp.say("Sorry, I didn't understand. Please press or say 1 for Room Service, 2 for Front Desk, 3 for Concierge, or 4 for Housekeeping.", voice='alice')
+    resp.pause(0.5)
+    gather = Gather(input='dtmf speech', num_digits=1, speech_timeout='auto', action='/service_selected', method='POST', speech_model='default')
+    resp.append(gather)
     resp.redirect('/voice')
     return Response(str(resp), mimetype='text/xml')
 
@@ -122,6 +130,8 @@ def service_selected():
 def handle_speech():
     call_sid = request.values.get('CallSid', 'default')
     speech_result = request.values.get('SpeechResult', '').strip()
+    
+    print(f"Speech Input: {speech_result}")  # Debug: Log transcribed speech
     
     conv = current_conversations.get(call_sid, {})
     if speech_result and conv:

@@ -4,8 +4,8 @@ from twilio.rest import Client
 import requests
 import os
 import json
+import re
 from typing import Dict
-import re # Added for regex in room_number
 
 app = Flask(__name__)
 
@@ -52,44 +52,23 @@ HOTEL_DATA = {
     # Add more rooms
 }
 
-# Language config: lang code, voice, welcome message with SSML, room prompt (6 languages)
+# Language config: lang code, voice, prompts (auto-detect from speech)
 LANGUAGES = {
-    1: {
-        "lang": "en-US", 
-        "voice": "polly.Amy-Neural", 
-        "welcome": '<prosody rate="slow">Hello <emphasis level="strong">{caller}</emphasis>, you are using version 0.2.0 of the <say-as interpret-as="characters">A I</say-as> hotel system.</prosody> <prosody rate="medium">Welcome. <break time="0.5s"/> How can I help you today? You can ask for room service, front desk, concierge, or housekeeping.</prosody>',
-        "room_prompt": '<prosody rate="medium">To assist better, what\'s your room number? <break time="0.3s"/></prosody>'
-    },
-    2: {
-        "lang": "es-ES", 
-        "voice": "polly.Mateo-Neural", 
-        "welcome": '<prosody rate="slow">Hola <emphasis level="strong">{caller}</emphasis>, estás usando la versión 0.2.0 del sistema de hotel <say-as interpret-as="characters">A I</say-as>.</prosody> <prosody rate="medium">Bienvenido. <break time="0.5s"/> ¿Cómo puedo ayudarte hoy? Puedes pedir servicio de habitación, recepción, conserjería o limpieza.</prosody>',
-        "room_prompt": '<prosody rate="medium">¿Cuál es el número de tu habitación para ayudarte mejor? <break time="0.3s"/></prosody>'
-    },
-    3: {
-        "lang": "fr-FR", 
-        "voice": "polly.Bryan-Neural", 
-        "welcome": '<prosody rate="slow">Bonjour <emphasis level="strong">{caller}</emphasis>, vous utilisez la version 0.2.0 du système <say-as interpret-as="characters">A I</say-as> de l\'hôtel.</prosody> <prosody rate="medium">Bienvenue. <break time="0.5s"/> Comment puis-je vous aider aujourd\'hui ? Vous pouvez demander le service en chambre, la réception, le concierge ou le ménage.</prosody>',
-        "room_prompt": '<prosody rate="medium">Pour mieux vous aider, quel est le numéro de votre chambre ? <break time="0.3s"/></prosody>'
-    },
-    4: {
-        "lang": "de-DE", 
-        "voice": "polly.Hans-Neural", 
-        "welcome": '<prosody rate="slow">Hallo <emphasis level="strong">{caller}</emphasis>, Sie verwenden Version 0.2.0 des Hotel-A-I-Systems.</prosody> <prosody rate="medium">Willkommen. <break time="0.5s"/> Wie kann ich Ihnen heute helfen? Sie können nach Zimmerservice, Rezeption, Concierge oder Hauswirtschaft fragen.</prosody>',
-        "room_prompt": '<prosody rate="medium">Um besser zu helfen, was ist Ihre Zimmernummer? <break time="0.3s"/></prosody>'
-    },
-    5: {
-        "lang": "it-IT", 
-        "voice": "polly.Giorgio-Neural", 
-        "welcome": '<prosody rate="slow">Ciao <emphasis level="strong">{caller}</emphasis>, stai utilizzando la versione 0.2.0 del sistema hotel A-I.</prosody> <prosody rate="medium">Benvenuto. <break time="0.5s"/> Come posso aiutarti oggi? Puoi chiedere per room service, reception, concierge o housekeeping.</prosody>',
-        "room_prompt": '<prosody rate="medium">Per aiutarti meglio, qual è il tuo numero di stanza? <break time="0.3s"/></prosody>'
-    },
-    6: {
-        "lang": "ja-JP", 
-        "voice": "polly.Mizuki-Neural", 
-        "welcome": '<prosody rate="slow">こんにちは <emphasis level="strong">{caller}</emphasis> 様、ホテルのA-Iシステムバージョン0.2.0をお使いです。</prosody> <prosody rate="medium">ようこそ。<break time="0.5s"/> 今日どのようにお手伝いしましょうか？ルームサービス、フロントデスク、コンシェルジュ、またはハウスキーピングをリクエストできます。</prosody>',
-        "room_prompt": '<prosody rate="medium">より良くお手伝いするために、お部屋の番号は何ですか？ <break time="0.3s"/></prosody>'
-    }
+    1: {"lang": "en-US", "voice": "polly.Amy-Neural"},  # Default
+    2: {"lang": "es-ES", "voice": "polly.Mateo-Neural"},
+    3: {"lang": "fr-FR", "voice": "polly.Bryan-Neural"},
+    4: {"lang": "de-DE", "voice": "polly.Hans-Neural"},
+    5: {"lang": "it-IT", "voice": "polly.Giorgio-Neural"},
+    6: {"lang": "ja-JP", "voice": "polly.Mizuki-Neural"}
+}
+
+# Language detection keywords (simple, based on common words)
+LANGUAGE_KEYWORDS = {
+    2: ['hola', 'por favor', 'gracias', 'español', 'es'],
+    3: ['bonjour', 's'il vous plaît', 'français', 'fr'],
+    4: ['hallo', 'bitte', 'deutsch', 'de'],
+    5: ['ciao', 'per favore', 'italiano', 'it'],
+    6: ['konnichiwa', 'arigatou', '日本語', 'ja']
 }
 
 STATE_FILE = '/tmp/conversations.json'  # Persistent state file
@@ -122,6 +101,14 @@ def save_call_log(log_entry):
     logs.append(log_entry)
     with open(CALL_LOGS_FILE, 'w') as f:
         json.dump(logs, f)
+
+def detect_language(speech_result):
+    """Detect language from speech_result keywords."""
+    speech_lower = speech_result.lower()
+    for lang_id, keywords in LANGUAGE_KEYWORDS.items():
+        if any(keyword in speech_lower for keyword in keywords):
+            return lang_id
+    return 1  # Default English
 
 def get_state(call_sid):
     """Get or create state for call."""
@@ -189,21 +176,21 @@ def get_room_data(room_number):
 def internal_error(error):
     """Handle internal errors gracefully."""
     resp = VoiceResponse()
-    resp.say("Sorry, something went wrong. Please call back or press any key to end.", voice='polly.Joanna-Neural')
+    resp.say("Sorry, something went wrong. Please call back or press any key to end.", voice='polly.Amy-Neural')
     resp.hangup()
     return Response(str(resp), mimetype='text/xml')
 
 @app.route('/test', methods=['GET'])
 def test():
     """Test endpoint for manual verification."""
-    return "Hotel AI webhook ready for Twilio calls. Version 0.2.0."
+    return "Hotel AI webhook ready for Twilio calls. Version 0.2.2."
 
 @app.route('/dashboard', methods=['GET'])
 def dashboard():
     """Simple dashboard to view recent call logs."""
     logs = load_call_logs()
     html = """
-    <html><body><h1>Hotel AI Call Dashboard (v0.2.0)</h1>
+    <html><body><h1>Hotel AI Call Dashboard (v0.2.2)</h1>
     <p>Recent Calls:</p>
     <ul>
     """
@@ -221,17 +208,24 @@ def voice():
     # Load state
     conv = get_state(call_sid)
     conv['caller_name'] = caller_name
+    conv['lang'] = 1  # Default English
     
     resp = VoiceResponse()
     lang_config = LANGUAGES[1]  # Default English
-    welcome_text = lang_config['welcome'].format(caller=caller_name)
+    welcome_text = f"Hello {caller_name}, you are using version 0.2.2 of the hotel A-I system. I speak most major languages. Welcome. How can I help you today? You can ask for room service, front desk, concierge, housekeeping, or maintenance."
     resp.say(welcome_text, voice=lang_config['voice'], language=lang_config['lang'])
     
-    # Language selection
-    resp.say("Please choose your language. Press or say 1 for English, 2 for Spanish, 3 for French, 4 for German, 5 for Italian, or 6 for Japanese.", voice=lang_config['voice'], language=lang_config['lang'])
-    gather_lang = Gather(input='dtmf speech', num_digits=1, speech_timeout=5, action='/language_selected', method='POST', speech_model='default')
-    resp.append(gather_lang)
-    resp.redirect('/voice')
+    # Ask for room number if not known
+    if 'room_number' not in conv or not conv['room_number']:
+        resp.say("To assist better, what's your room number?", voice=lang_config['voice'], language=lang_config['lang'])
+        gather_room = Gather(input='speech dtmf', num_digits=3, speech_timeout='auto', action='/room_number', method='POST', speech_model='default')
+        resp.append(gather_room)
+        resp.redirect('/voice')
+        return Response(str(resp), mimetype='text/xml')
+    
+    # Gather DTMF or speech for service selection (voice-first)
+    gather = Gather(input='dtmf speech', num_digits=1, speech_timeout='auto', action='/service_selected', method='POST', speech_model='default')
+    resp.append(gather)
     
     # Save state
     save_state_update(call_sid, conv)
@@ -243,57 +237,6 @@ def voice():
         'ai_reply': 'welcome'
     })
     
-    return Response(str(resp), mimetype='text/xml')
-
-@app.route('/language_selected', methods=['POST'])
-def language_selected():
-    call_sid = request.values.get('CallSid', 'default')
-    digit = request.values.get('Digits', None)
-    speech_result = request.values.get('SpeechResult', '').lower().strip()
-    
-    conv = get_state(call_sid)
-    lang_id = conv.get('lang', 1)  # Default
-    
-    # Parse language choice
-    if speech_result:
-        if any(word in speech_result for word in ['one', 'english', 'en']):
-            lang_id = 1
-        elif any(word in speech_result for word in ['two', 'spanish', 'es']):
-            lang_id = 2
-        elif any(word in speech_result for word in ['three', 'french', 'fr']):
-            lang_id = 3
-        elif any(word in speech_result for word in ['four', 'german', 'de']):
-            lang_id = 4
-        elif any(word in speech_result for word in ['five', 'italian', 'it']):
-            lang_id = 5
-        elif any(word in speech_result for word in ['six', 'japanese', 'ja']):
-            lang_id = 6
-    elif digit:
-        lang_id = int(digit) if digit.isdigit() else 1
-        if lang_id not in LANGUAGES:
-            lang_id = 1
-    
-    conv['lang'] = lang_id
-    lang_config = LANGUAGES[lang_id]
-    
-    resp = VoiceResponse()
-    welcome_text = lang_config['welcome'].format(caller=conv['caller_name'])
-    resp.say(welcome_text, voice=lang_config['voice'], language=lang_config['lang'])
-    
-    # Ask for room number if not known
-    if 'room_number' not in conv or not conv['room_number']:
-        resp.say(lang_config['room_prompt'], voice=lang_config['voice'], language=lang_config['lang'])
-        gather_room = Gather(input='speech dtmf', num_digits=3, speech_timeout=5, action='/room_number', method='POST', speech_model='default')
-        resp.append(gather_room)
-        resp.redirect('/language_selected')
-        save_state_update(call_sid, conv)
-        return Response(str(resp), mimetype='text/xml')
-    
-    # Gather DTMF or speech for service selection
-    gather = Gather(input='dtmf speech', num_digits=1, speech_timeout=10, action='/service_selected', method='POST', speech_model='default')
-    resp.append(gather)
-    resp.redirect('/language_selected')
-    save_state_update(call_sid, conv)
     return Response(str(resp), mimetype='text/xml')
 
 @app.route('/room_number', methods=['POST'])
@@ -318,7 +261,7 @@ def room_number():
         lang_config = LANGUAGES[conv['lang']]
         resp = VoiceResponse()
         resp.say(f"Thanks, noted for room {room_num}. {room_data['guest']}, your balance is ${room_data['balance']}. How can I help?", voice=lang_config['voice'], language=lang_config['lang'])
-        gather = Gather(input='dtmf speech', num_digits=1, speech_timeout=10, action='/service_selected', method='POST', speech_model='default')
+        gather = Gather(input='dtmf speech', num_digits=1, speech_timeout='auto', action='/service_selected', method='POST', speech_model='default')
         resp.append(gather)
         save_state_update(call_sid, conv)
         return Response(str(resp), mimetype='text/xml')
@@ -326,8 +269,8 @@ def room_number():
     # Invalid room, reprompt
     lang_config = LANGUAGES[conv['lang']]
     resp = VoiceResponse()
-    resp.say(lang_config['room_prompt'], voice=lang_config['voice'], language=lang_config['lang'])
-    gather = Gather(input='speech dtmf', num_digits=3, speech_timeout=5, action='/room_number', method='POST', speech_model='default')
+    resp.say("To assist better, what's your room number?", voice=lang_config['voice'], language=lang_config['lang'])
+    gather = Gather(input='speech dtmf', num_digits=3, speech_timeout='auto', action='/room_number', method='POST', speech_model='default')
     resp.append(gather)
     save_state_update(call_sid, conv)
     return Response(str(resp), mimetype='text/xml')
@@ -339,41 +282,59 @@ def service_selected():
     speech_result = request.values.get('SpeechResult', '').lower().strip()
     
     conv = get_state(call_sid)
-    lang_config = LANGUAGES[conv['lang']]
+    lang_id = conv.get('lang', 1)
+    lang_config = LANGUAGES[lang_id]
     
-    # Service matching (speech or DTMF)
+    print(f"Service Selection Debug: Digit={digit}, Speech={speech_result}, Lang={lang_config['lang']}")  # Debug: Log input
+    
+    # Auto-detect language from speech_result
+    if speech_result:
+        detected_lang = detect_language(speech_result)
+        if detected_lang != lang_id:
+            conv['lang'] = detected_lang
+            lang_config = LANGUAGES[detected_lang]
+            print(f"Detected and switched to lang {detected_lang}")
+    
+    # Try speech first, then DTMF - expanded keywords for natural phrases
     service_num = None
     if speech_result:
-        if any(word in speech_result for word in ['one', 'room', 'service', 'food', 'order', 'meal']):
+        if any(word in speech_result for word in ['one', 'room', 'service', 'food', 'order', 'meal', 'dinner', 'breakfast', 'lunch', 'snack', 'beverage']):
             service_num = 1
-        elif any(word in speech_result for word in ['two', 'front', 'desk', 'check', 'bill', 'inquiry']):
+        elif any(word in speech_result for word in ['two', 'front', 'desk', 'check', 'in', 'out', 'bill', 'billing', 'payment', 'inquiry', 'reservation', 'key', 'room key', 'complaint']):
             service_num = 2
-        elif any(word in speech_result for word in ['three', 'concierge', 'recommend', 'restaurant']):
+        elif any(word in speech_result for word in ['three', 'concierge', 'recommend', 'restaurant', 'attraction', 'tour', 'transport', 'taxi', 'book', 'reserve', 'dinner reservation', 'show']):
             service_num = 3
-        elif any(word in speech_result for word in ['four', 'house', 'housekeeping', 'clean', 'towel']):
+        elif any(word in speech_result for word in ['four', 'house', 'housekeeping', 'clean', 'towel', 'linen', 'amenity', 'bed', 'room clean', 'extra pillow', 'soap']):
             service_num = 4
-        elif any(word in speech_result for word in ['five', 'maintenance', 'fix', 'ac', 'plumbing']):
+        elif any(word in speech_result for word in ['five', 'maintenance', 'fix', 'ac', 'plumbing', 'repair', 'broken']):
             service_num = 5
     elif digit:
-        service_num = int(digit) if digit.isdigit() else None
+        try:
+            service_num = int(digit)
+        except ValueError:
+            pass
     
     if service_num and service_num in SERVICES:
         service_name, desc = SERVICES[service_num]
         conv['service'] = service_name
-        conv['messages'] = [{"role": "system", "content": f"You are a helpful {service_name} assistant in a hotel. {desc}"}]
+        conv['system_prompt'] = f"You are a helpful {service_name} assistant in a hotel. {desc}"
+        conv['messages'] = [{"role": "system", "content": conv['system_prompt']}]
+        
+        print(f"Connected to service {service_num}: {service_name}")  # Debug: Log success
         
         resp = VoiceResponse()
         resp.say(f"Connected to {service_name}. How can I help you today? You can speak or press pound to end.", voice=lang_config['voice'], language=lang_config['lang'])
         
-        gather = Gather(input='speech', speech_timeout=10, action='/handle_speech', method='POST', speech_model='default', finish_on_key='#')
+        # Gather speech for conversation
+        gather = Gather(input='speech', speech_timeout='auto', action='/handle_speech', method='POST', speech_model='default', finish_on_key='#')
         resp.append(gather)
         save_state_update(call_sid, conv)
         return Response(str(resp), mimetype='text/xml')
     
-    # Invalid, reprompt
+    # Invalid, repeat with clearer prompt
     resp = VoiceResponse()
     resp.say("Sorry, I didn't understand. Tell me what you need: room service, front desk, concierge, housekeeping, or maintenance.", voice=lang_config['voice'], language=lang_config['lang'])
-    gather = Gather(input='dtmf speech', num_digits=1, speech_timeout=10, action='/service_selected', method='POST', speech_model='default')
+    gather = Gather(input='dtmf speech', num_digits=1, speech_timeout='auto', action='/service_selected', method='POST', speech_model='default')
     resp.append(gather)
     save_state_update(call_sid, conv)
     return Response(str(resp), mimetype='text/xml')
@@ -384,14 +345,26 @@ def handle_speech():
     speech_result = request.values.get('SpeechResult', '').strip()
     
     conv = get_state(call_sid)
-    lang_config = LANGUAGES[conv['lang']]
+    lang_id = conv.get('lang', 1)
+    lang_config = LANGUAGES[lang_id]
     
+    # Auto-detect language from speech_result
     if speech_result:
-        conv['messages'].append({"role": "user", "content": speech_result})
+        detected_lang = detect_language(speech_result)
+        if detected_lang != lang_id:
+            conv['lang'] = detected_lang
+            lang_config = LANGUAGES[detected_lang]
+            print(f"Detected and switched to lang {detected_lang}")
+    
+    print(f"Speech Input: {speech_result}")  # Debug: Log transcribed speech
+    
+    if speech_result and conv:
+        messages = conv['messages']
+        messages.append({"role": "user", "content": speech_result})
         
         # Check for escalation in all messages
-        all_content = ' '.join([m['content'].lower() for m in conv['messages']])
-        if any(keyword in all_content for keyword in ['human', 'manager', 'person', 'complaint', 'issue']):
+        all_content = ' '.join([m['content'].lower() for m in messages])
+        if any(keyword in all_content for keyword in ['human', 'manager', 'person', 'complaint', 'issue', 'problem']):
             resp = VoiceResponse()
             resp.say("I'll connect you to a staff member right away. Please hold.", voice=lang_config['voice'], language=lang_config['lang'])
             resp.hangup()
@@ -400,20 +373,27 @@ def handle_speech():
             if call_sid in all_state:
                 del all_state[call_sid]
             save_state(all_state)
+            save_call_log({
+                'call_sid': call_sid,
+                'service': conv.get('service', 'unknown'),
+                'speech': speech_result,
+                'ai_reply': 'escalated to human'
+            })
             return Response(str(resp), mimetype='text/xml')
         
-        ai_reply = get_ai_response(conv['messages'], conv.get('room_number'), conv.get('service'))
-        conv['messages'].append({"role": "assistant", "content": ai_reply})
+        ai_reply = get_ai_response(messages, conv.get('room_number'), conv.get('service'))
+        messages.append({"role": "assistant", "content": ai_reply})
         
         resp = VoiceResponse()
         resp.say(ai_reply, voice=lang_config['voice'], language=lang_config['lang'])
-        resp.pause(1)
+        resp.pause(length=1)
         if "bye" in speech_result.lower() or "goodbye" in speech_result.lower():
             resp.say("Thank you for calling. Goodbye!", voice=lang_config['voice'], language=lang_config['lang'])
             resp.hangup()
         else:
             resp.say("What else can I help with? Say or press pound to end.", voice=lang_config['voice'], language=lang_config['lang'])
-            gather = Gather(input='speech', speech_timeout=10, action='/handle_speech', method='POST', speech_model='default', finish_on_key='#')
+            # Continue conversation with speech
+            gather = Gather(input='speech', speech_timeout='auto', action='/handle_speech', method='POST', speech_model='default', finish_on_key='#')
             resp.append(gather)
         save_state_update(call_sid, conv)
         save_call_log({
@@ -428,11 +408,17 @@ def handle_speech():
     resp = VoiceResponse()
     resp.say("Thank you for calling. Goodbye!", voice=lang_config['voice'], language=lang_config['lang'])
     resp.hangup()
-    # Clean up
+    # Clean up conversation
     all_state = load_state()
     if call_sid in all_state:
         del all_state[call_sid]
     save_state(all_state)
+    save_call_log({
+        'call_sid': call_sid,
+        'service': conv.get('service', 'unknown'),
+        'speech': 'end call',
+        'ai_reply': 'goodbye'
+    })
     return Response(str(resp), mimetype='text/xml')
 
 @app.route('/hangup', methods=['POST'])

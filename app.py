@@ -78,7 +78,7 @@ def get_ai_response(messages, room_number=None, service_name=None):
         base_prompt += f" Guest is in room {room_number}. {room_data['guest']}, status: {room_data['status']}, balance: ${room_data['balance']}. Reference if relevant."
     if service_name:
         base_prompt += f" You are assisting with {service_name}."
-    if "human" in messages[-1]['content'].lower() or "manager" in messages[-1]['content'].lower():
+    if any(keyword in messages[-1]['content'].lower() for keyword in ['human', 'manager', 'person', 'complaint', 'issue']):
         base_prompt += " The user wants a human—escalate politely."
     messages.insert(0, {"role": "system", "content": base_prompt})
     
@@ -218,19 +218,20 @@ def service_selected():
     call_sid = request.values.get('CallSid', 'default')
     digit = request.values.get('Digits', None)
     speech_result = request.values.get('SpeechResult', '').lower().strip()
+    lang_config = LANGUAGES[current_conversations.get(call_sid, {}).get('lang', 1)]
     
-    print(f"Service Selection Debug: Digit={digit}, Speech={speech_result}")  # Debug: Log input
+    print(f"Service Selection Debug: Digit={digit}, Speech={speech_result}, Lang={lang_config['lang']}")  # Debug: Log input
     
-    # Try speech first, then DTMF - expanded keywords for better matching
+    # Try speech first, then DTMF - expanded keywords for natural phrases
     service_num = None
     if speech_result:
-        if any(word in speech_result for word in ['one', 'room', 'service', 'food', 'order']):
+        if any(word in speech_result for word in ['one', 'room', 'service', 'food', 'order', 'meal', 'dinner', 'breakfast', 'lunch', 'snack', 'beverage']):
             service_num = 1
-        elif any(word in speech_result for word in ['two', 'front', 'desk', 'check', 'bill', 'billing', 'inquiry']):
+        elif any(word in speech_result for word in ['two', 'front', 'desk', 'check', 'in', 'out', 'bill', 'billing', 'payment', 'inquiry', 'reservation', 'key', 'room key', 'complaint']):
             service_num = 2
-        elif any(word in speech_result for word in ['three', 'concierge', 'recommend', 'restaurant', 'attraction', 'reservation']):
+        elif any(word in speech_result for word in ['three', 'concierge', 'recommend', 'restaurant', 'attraction', 'tour', 'transport', 'taxi', 'book', 'reserve', 'dinner reservation', 'show']):
             service_num = 3
-        elif any(word in speech_result for word in ['four', 'house', 'housekeeping', 'clean', 'towel', 'linen', 'amenity']):
+        elif any(word in speech_result for word in ['four', 'house', 'housekeeping', 'clean', 'towel', 'linen', 'amenity', 'bed', 'room clean', 'extra pillow', 'soap']):
             service_num = 4
     elif digit:
         try:
@@ -248,7 +249,7 @@ def service_selected():
         print(f"Connected to service {service_num}: {service_name}")  # Debug: Log success
         
         resp = VoiceResponse()
-        resp.say(f"Connected to {service_name}. How can I help you today? You can speak or press pound to end.", voice='alice')
+        resp.say(f"Connected to {service_name}. How can I help you today? You can speak or press pound to end.", voice=lang_config['voice'], language=lang_config['lang'])
         
         # Gather speech for conversation
         gather = Gather(input='speech', speech_timeout='auto', action='/handle_speech', method='POST', speech_model='default', finish_on_key='#')
@@ -258,17 +259,18 @@ def service_selected():
     
     # Invalid, repeat with clearer prompt
     resp = VoiceResponse()
-    resp.say("Sorry, I didn't understand. Please press or say 1 for Room Service, 2 for Front Desk, 3 for Concierge, or 4 for Housekeeping.", voice='alice')
+    resp.say("Sorry, I didn't understand. Tell me what you need: room service, front desk, concierge, or housekeeping.", voice=lang_config['voice'], language=lang_config['lang'])
     resp.pause(0.5)
     gather = Gather(input='dtmf speech', num_digits=1, speech_timeout='auto', action='/service_selected', method='POST', speech_model='default')
     resp.append(gather)
-    resp.redirect('/voice')
+    resp.redirect('/service_selected')
     return Response(str(resp), mimetype='text/xml')
 
 @app.route('/handle_speech', methods=['POST'])
 def handle_speech():
     call_sid = request.values.get('CallSid', 'default')
     speech_result = request.values.get('SpeechResult', '').strip()
+    lang_config = LANGUAGES[current_conversations.get(call_sid, {}).get('lang', 1)]
     
     print(f"Speech Input: {speech_result}")  # Debug: Log transcribed speech
     
@@ -277,22 +279,35 @@ def handle_speech():
         messages = conv['messages']
         messages.append({"role": "user", "content": speech_result})
         
-        ai_reply = get_ai_response(messages, conv['room_number'], conv['service'])
+        # Check for escalation keywords
+        if any(keyword in speech_result.lower() for keyword in ['human', 'manager', 'person', 'complaint', 'issue', 'problem']):
+            resp = VoiceResponse()
+            resp.say("I'll connect you to a staff member right away. Please hold.", voice=lang_config['voice'], language=lang_config['lang'])
+            resp.hangup()
+            # Clean up
+            if call_sid in current_conversations:
+                del current_conversations[call_sid]
+            return Response(str(resp), mimetype='text/xml')
+        
+        ai_reply = get_ai_response(messages, conv.get('room_number'), conv.get('service'))
         messages.append({"role": "assistant", "content": ai_reply})
         
         resp = VoiceResponse()
-        resp.say(ai_reply, voice='alice')
+        resp.say(ai_reply, voice=lang_config['voice'], language=lang_config['lang'])
         resp.pause(length=1)
-        resp.say("What else can I help with? Say or press pound to end.", voice='alice')
-        
-        # Continue conversation with speech
-        gather = Gather(input='speech', speech_timeout='auto', action='/handle_speech', method='POST', speech_model='default', finish_on_key='#')
-        resp.append(gather)
+        if "bye" in speech_result.lower() or "goodbye" in speech_result.lower():
+            resp.say("Thank you for calling. Goodbye!", voice=lang_config['voice'], language=lang_config['lang'])
+            resp.hangup()
+        else:
+            resp.say("What else can I help with? Say or press pound to end.", voice=lang_config['voice'], language=lang_config['lang'])
+            # Continue conversation with speech
+            gather = Gather(input='speech', speech_timeout='auto', action='/handle_speech', method='POST', speech_model='default', finish_on_key='#')
+            resp.append(gather)
         return Response(str(resp), mimetype='text/xml')
     
     # No speech or end
     resp = VoiceResponse()
-    resp.say("Thank you for calling. Goodbye!")
+    resp.say("Thank you for calling. Goodbye!", voice=lang_config['voice'], language=lang_config['lang'])
     resp.hangup()
     # Clean up conversation
     if call_sid in current_conversations:
@@ -301,8 +316,9 @@ def handle_speech():
 
 @app.route('/hangup', methods=['POST'])
 def hangup():
+    lang_config = LANGUAGES[1]  # Default English for hangup
     resp = VoiceResponse()
-    resp.say("Thank you for calling. Goodbye!")
+    resp.say("Thank you for calling. Goodbye!", voice=lang_config['voice'], language=lang_config['lang'])
     resp.hangup()
     return Response(str(resp), mimetype='text/xml')
 
